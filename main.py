@@ -1,3 +1,7 @@
+# 다이어트 레시피 챗봇 API
+# 실행: uvicorn main:app --reload
+# 테스트: http://127.0.0.1:8000/docs
+
 import os
 import json
 import torch
@@ -11,7 +15,10 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 # 1. 앱 초기화 & 모델 로딩
 # 모델 로딩은 서버 시작 시 한 번만 실행됨
 # (요청마다 로딩 시 매번 수십 초가 걸려 서비스 X)
-app = FastAPI(title="RAG API", description="검색 기반 질의응답 API")
+app = FastAPI(
+    title="Diet Recipe Chatbot API",
+    description="식약처 레시피 데이터 기반 다이어트 레시피 추천 챗봇"
+)
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"사용 디바이스: {device}")
@@ -39,14 +46,12 @@ DOCS_PATH = "documents.json"
 
 DIMENSION = 768    # ko-sroberta-multitask의 출력 차원
 
+# 기본값: 인덱스 파일이 없을 때만 사용됨
+# 실제로는 build_recipe_index.py로 만든 레시피 인덱스를 불러와서 씀
 DEFAULT_DOCUMENTS = [
-    "타이타닉은 1912년 4월 15일 빙산과 충돌해 침몰한 영국의 여객선이다.",
-    "파이썬은 1991년 귀도 반 로섬이 개발한 프로그래밍 언어이다.",
-    "BERT는 구글이 2018년에 발표한 자연어처리 모델이다.",
-    "김치는 발효 채소를 이용한 한국의 전통 음식이다.",
-    "RAG는 검색과 생성을 결합한 자연어처리 기법이다.",
-    "딥러닝은 인공신경망을 여러 층으로 쌓아 학습하는 머신러닝의 한 분야이다.",
+    "김치찌개는 국&찌개 종류의 요리로, 김치와 돼지고기를 넣고 끓이는 대표적인 한식이다.",
 ]
+
 def embed_and_normalize(texts):
     """텍스트를 임베딩하고 정규화 (정규화해야 내적 = 코사인 유사도)"""
     if isinstance(texts, str):
@@ -59,19 +64,19 @@ def embed_and_normalize(texts):
 def build_index():
     """저장된 인덱스가 있으면 불러오고, 없으면 새로 생성"""
     if os.path.exists(INDEX_PATH) and os.path.exists(DOCS_PATH):
-        print("저장된 인덱스 불러오는 중...")
+        print("저장된 레시피 인덱스 불러오는 중...")
         idx = faiss.read_index(INDEX_PATH)
         with open(DOCS_PATH, 'r', encoding='utf-8') as f:
             docs = json.load(f)
-        print(f"인덱스 로드 완료 (문서 {len(docs)}개)")
+        print(f"레시피 인덱스 로드 완료 (레시피 {len(docs)}개)")
         return idx, docs
 
-    print("세 인덱스 생성 중...")
+    print("레시피 인덱스가 없어 기본값으로 생성합니다.")
+    print("실제 레시피 데이터를 쓰려면 build_recipe_documents.py -> build_recipe_index.py 순서로 먼저 실행하세요.")
     idx = faiss.IndexFlatIP(DIMENSION)
     idx.add(embed_and_normalize(DEFAULT_DOCUMENTS))
     docs = DEFAULT_DOCUMENTS.copy()
     save_index(idx, docs)
-    print(f"인덱스 생성 완료 (문서 {len(docs)}개)")
     return idx, docs
 
 def save_index(idx, docs):
@@ -83,11 +88,11 @@ def save_index(idx, docs):
 index, documents = build_index()
 
 # 3. 요청/응답 형식 정의 (Pydantic)
-class QueryRequest(BaseModel):
+class ChatRequest(BaseModel):
     question: str
     top_k: int = 2
 
-class QueryResponse(BaseModel):
+class ChatResponse(BaseModel):
     question: str
     retrieved_docs: list[str]
     answer: str
@@ -96,10 +101,10 @@ class SearchResponse(BaseModel):
     question: str
     results: list[dict]
 
-class AddDocumentRequest(BaseModel):
+class AddRecipeRequest(BaseModel):
     documents: list[str]
 
-class AddDocumentResponse(BaseModel):
+class AddRecipeResponse(BaseModel):
     added: int
     total: int
 
@@ -117,13 +122,14 @@ def search_with_scores(query, top_k=2):
     return results
 
 def generate_answer(query, context):
-    prompt = f"""당신은 레시피 추천 챗봇입니다. 아래 [레시피 목록]에 있는 요리만 추천하세요. 목록에 없는 요리나 정보는 절대 언급하지 마세요. 영양 성분에 대한 추가 설명은 하지 말고, 요리명과 이유만 간단히 답하세요.
+    """레시피 목록을 참고해 사용자 질문에 답변 생성"""
+    prompt = f"""당신은 다이어트 레시피 추천 챗봇입니다. 아래 [레시피 목록]에 있는 요리만 추천하세요. 목록에 없는 요리나 정보는 절대 언급하지 마세요. 영양 성분에 대한 추가 설명은 하지 말고, 요리명과 이유만 간단히 답하세요.
 
 [레시피 목록]
 {context}
 
 사용자 질문: {query}
-답변 (요리명과 매운 이유만 1~2줄로):"""
+답변 (요리명과 이유만 1~2줄로):"""
     messages = [{"role": "user", "content": prompt}]
     text = gen_tokenizer.apply_chat_template(
         messages, tokenize=False, add_generation_prompt=True
@@ -144,46 +150,46 @@ def generate_answer(query, context):
 # 5. API 엔드포인트
 @app.get("/")
 def root():
-    """서버 상태 확인 (헬스 체크)"""
+    """서버 상태 확인"""
     return {
         "status": "running",
         "device": str(device),
         "indexed_documents": index.ntotal
     }
 
-@app.get("/documents")
+@app.get("/recipes")
 def list_documents():
-    """등록된 문서 목록 조회"""
+    """등록된 fptlvl 목록 조회"""
     return {"count": len(documents), "documents": documents}
 
-@app.post("/documents", response_model=AddDocumentResponse)
-def add_documents(request: AddDocumentRequest):
-    """새 문서를 인덱스에 추가 (서버 재시작 없이 지식 베이스 확장)"""
+@app.post("/recipes", response_model=AddRecipeResponse)
+def add_documents(request: AddRecipeRequest):
+    """새 레시피를 인덱스에 추가 (서버 재시작 없이 레시피 DB 확장)"""
     if not request.documents:
-        raise HTTPException(status_code=400, detail="문서가 비어있습니다.")
+        raise HTTPException(status_code=400, detail="레시피가 비어있습니다.")
     # 임베딩 -> 정규화 -> 인덱스에 추가
     index.add(embed_and_normalize(request.documents))
     # 인덱스 번호와 순서를 맞추기 위해 리스트에도 동일하게 추가
     documents.extend(request.documents)
     save_index(index, documents)
 
-    return AddDocumentResponse(added=len(request.documents), total=index.ntotal)
+    return AddRecipeResponse(added=len(request.documents), total=index.ntotal)
 
 @app.post("/search", response_model=SearchResponse)
-def search_only(request: QueryRequest):
-    """검색만 수행 (생성 없이 빠르게 확인용)"""
+def search_only(request: ChatRequest):
+    """레시피 검색만 수행 (생성 없이 빠르게 확인용)"""
     results = search_with_scores(request.question, top_k=request.top_k)
     return SearchResponse(question=request.question, results=results)
 
-@app.post("/ask", response_model=QueryResponse)
-def ask(request: QueryRequest):
-    """RAG 전체 파이프라인: 검색 + 답변 생성"""
+@app.post("/ask", response_model=ChatResponse)
+def ask(request: ChatRequest):
+    """챗봇 대화: 검색 + 답변 생성"""
     results = search_with_scores(request.question, top_k=request.top_k)
-    retrieved = [r["document"] for r in results]
+    retrieved = [r["recipe"] for r in results]
     context = "\n".join(retrieved)
     answer = generate_answer(request.question, context)
 
-    return QueryResponse(
+    return ChatResponse(
         question=request.question,
         retrieved_docs=retrieved,
         answer=answer

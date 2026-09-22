@@ -1,6 +1,6 @@
-# RAG API Dockerfile
-# 빌드: docker build -t rag-api .
-# 실행: docker run -p 8000:8000 rag-api
+# Diet Recipe Chatbot Dockerfile
+# 빌드: docker build -t diet-recipe-chatbot .
+# 실행: docker run -p 8000:8000 diet-recipe-chatbot
 
 # 베이즈 이미지 3.13 슬림 버전
 # slim = 불필요한 패키지를 뺀 경량 이미지
@@ -27,12 +27,20 @@ SentenceTransformer('jhgan/ko-sroberta-multitask')"
 
 RUN python -c "\
 from transformers import AutoTokenizer, AutoModelForCausalLM; \
-AutoTokenizer.from_pretrained('Qwen/Qwen2.5-0.5B-Instruct'); \
-AutoModelForCausalLM.from_pretrained('Qwen/Qwen2.5-0.5B-Instruct')"
+AutoTokenizer.from_pretrained('Qwen/Qwen2.5-1.5B-Instruct'); \
+AutoModelForCausalLM.from_pretrained('Qwen/Qwen2.5-1.5B-Instruct')"
 
 # 애플리케이션 코드 복사
 # 코드는 자주 바뀌므로 마지막에 복사 (앞 레이어 캐시를 최대한 활용)
 COPY main.py .
+
+# 레시피 인덱스가 미리 준비되어 있다면 같이 포함
+# (documents.index, documents.json은 .gitignore에 있어 레포엔 없음 -> 로컬에 있으면 복사됨)
+# 지금 CI가 Dockerfile의 아래 코드를 그대로 실행하면 CI 환경에는 그 파일이 없기에 필드에 실패함
+# 따라서 아래 코드를 주석처리하여 빌드를 넘김
+# COPY documents.index documents.json ./ 
+
+
 # 컨테이너가 사용할 포트 명시 (문서화 목적, 실제 개방은 docker run -p)
 EXPOSE 8000
 
