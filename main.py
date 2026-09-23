@@ -18,7 +18,7 @@ from pydantic import BaseModel
 from sentence_transformers import SentenceTransformer
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
-load_dotenv()  # .env 파이르이 값을 환경변수로 불러옴
+load_dotenv()  # .env 파일의 값을 환경변수로 불러옴
 
 # ============================================================
 # 1. 앱 초기화 & 모델 로딩
