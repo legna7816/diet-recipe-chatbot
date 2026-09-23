@@ -1,6 +1,6 @@
 # 식약처 레시피 데이터를 RAG 문서로 변환
 # 실행: python build_recipe_documents.py
-# 결과: recipe_documents.json (RAG API에 넣을 문서 리스트)
+# 결과: recipe_documents.json
 
 import requests
 import json
@@ -9,25 +9,58 @@ import time
 SERVICE_KEY = "a005b424b1be4eaaa1d5"
 BASE_URL = f"http://openapi.foodsafetykorea.go.kr/api/{SERVICE_KEY}/COOKRCP01/json"
 
-# 1. 레시피 가져오기 (전체 또는 일부)
-def fetch_recipes(start, end):
-    url = f"{BASE_URL}/{start}/{end}"
-    response = requests.get(url)
-    response.raise_for_status()
-    return response.json()['COOKRCP01']['row']
+BATCH_SIZE = 300
+MAX_RETRIES = 3
 
-def fetch_all_recipes(batch_size=100, limit=1156):
-    # 전체 1156개를 한 번에 가져오면 응답이 크고 느릴 수 있어
-    # batch_size 단위로 나눠서 가져옴 (limit으로 실습용 개수 제한)
+# 1. 레시피 수집 (개수 검증 + 재시도)
+def fetch_batch(start, end):
+    # start~end 구간 요청 -> (레시피 리스트, API가 알려준 전체 개수) 반환
+    url = f"{BASE_URL}/{start}/{end}"
+    response = requests.get(url, timeout=30)
+    response.raise_for_status()
+    data = response.json()['COOKRCP01']
+    return data.get('row', []), int(data.get('total_count', 0))
+
+def fetch_batch_with_retry(start, end):
+    # 받은 개수가 요청한 개수와 같을 때만 성공으로 인정
+    # 예전 버전은 이 검증이 없어서, 일부만 받아와도 그대로 넘어가 데이터가 조용히 누락됨
+    expected = end - start + 1
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            rows, _ = fetch_batch(start, end)
+            if len(rows) == expected:
+                return rows
+            print(f"  경고: {start}-{end} 구간 {len(rows)}/{expected}개만 수신 (재시도 {attempt}/{MAX_RETRIES})")
+        except (requests.RequestException, KeyError, ValueError) as e:
+            print(f"  오류: {start}-{end} 구간 요청 실패 - {e} (재시도 {attempt}/{MAX_RETRIES})")
+        time.sleep(1.0 * attempt)  # 재시도할수록 조금 더 기다림
+    raise RuntimeError(f"{start}-{end} 구간을 {MAX_RETRIES}번 시도했지만 완전히 받지 못했습니다.")
+
+def fetch_all_recipes(limit=None):
+    # 전체 개수를 하드코딩하지 않고 API의 total_count로 자동 설정
+    # limit을 주면 실습용으로 그 개수까지만 수집
+    _, total = fetch_batch(1, 1)
+    if limit:
+        total = min(total, limit)
+    print(f"수집 대상: {total}개")
+
     all_recipes = []
-    start = 1
-    while start <= limit:
-        end = min(start + batch_size - 1, limit)
+    for start in range(1, total + 1, BATCH_SIZE):
+        end = min(start + BATCH_SIZE - 1, total)
         print(f"가져오는 중: {start}-{end}")
-        recipes = fetch_recipes(start, end)
-        all_recipes.extend(recipes)
-        start = end + 1
+        all_recipes.extend(fetch_batch_with_retry(start, end))
         time.sleep(0.3)    # API 서버에 부담 주지 않기 위한 대기
+
+    # 최종 검증: 개수가 안 맞으면 불완전한 파일을 저장하지 않도록 여기서 멈춤
+    if len(all_recipes) != total:
+        raise RuntimeError(f"수집 개수 불일치: {len(all_recipes)}/{total}")
+
+    # 중복 확인 (RCP_SEQ = 레시피 고유번호)
+    seqs = [r.get('RCP_SEQ') for r in all_recipes]
+    duplicates = len(seqs) - len(set(seqs))
+    if duplicates:
+        print(f"경고: 중복 레시피 {duplicates}개 발견")
+
     return all_recipes
 
 # 2. 한국어 조사 처리 함수
@@ -73,8 +106,7 @@ def recipe_to_document(recipe):
     # 조리 단계: MANUAL01 ~ MANUAL20 중 값이 있는 것만 순서대로 모으기
     steps = []
     for i in range(1, 21):
-        key = f'MANUAL{i:02d}'    # 01, 02, ... , 20 형태로 포맷
-        step_text = recipe.get(key, '').strip()
+        step_text = recipe.get(f'MANUAL{i:02d}', '').strip()
         if step_text:
             steps.append(step_text)
     steps_text = ' '.join(steps)
@@ -84,19 +116,17 @@ def recipe_to_document(recipe):
 
     # 최종 문서: 검색이 잘 되도록 핵심 정보를 자연어 문장으로 구성
     document = (
-        f"{name}{josa1} {category} 종류의 요리로, 조리 방법은 {cooking_way}이다."
-        f"재료는 {ingredients}이다."
-        f"칼로리는 {calories}kcal이다."
-        f"조리 순서: {steps_text}"
+        f"{name}{josa1} {category} 종류의 요리로, 조리 방법은 {cooking_way}이다. "
+        f"재료는 {ingredients}이다. "
+        f"칼로리는 {calories}kcal이다. "
+        f"조리 순서: {steps_text} "
     )
     return document
 
 # 4. 전체 실행
 if __name__ == "__main__":
     print("레시피 데이터 가져오는 중...")
-
-    # 실습 단계라 300개만 *전체는 1156개, limit 조절 가능
-    recipes = fetch_all_recipes(batch_size=100, limit=1156)
+    recipes = fetch_all_recipes() # limit 없이 = API가 가진 전체
     print(f"총 {len(recipes)}개 레시피 수집 완료")
 
     print("문서로 변환 중...")
