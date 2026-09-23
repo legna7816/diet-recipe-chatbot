@@ -3,4 +3,5 @@ __pycache__/
 documents.index
 documents.json
 recipe_documents.json
+.env
 *.pyc
