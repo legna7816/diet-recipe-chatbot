@@ -153,7 +153,7 @@ def db_ensure_session(session_id: str | None) -> str:
 
 def db_session_exists(session_id: str) -> bool:
     with get_connection() as conn, conn.cursor() as cur:
-        cur.execute("SELECT 1 FROM char_sessions WHERE session_id = %s", (session_id,))
+        cur.execute("SELECT 1 FROM chat_sessions WHERE session_id = %s", (session_id,))
         return cur.fetchone() is not None
 
 def db_get_recent_history(session_id: str, limit: int) -> list[dict]:
